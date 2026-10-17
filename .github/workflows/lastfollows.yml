@@ -2,9 +2,9 @@ name: lastfollows
 
 on:
   schedule:
-    - cron: "*/30 * * * *"   # comprobar follows cada 30 min (UTC). En GitHub free, no bajar de 30 min.
-    - cron: "20 6 * * *"     # resumen diario por Telegram + panel web (UTC = 07:20 hora España)
-  workflow_dispatch: {}      # botón "Run workflow" para lanzarlo a mano
+    - cron: "*/30 * * * *"
+    - cron: "20 6 * * *"
+  workflow_dispatch: {}
 
 permissions:
   contents: write
@@ -19,6 +19,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
@@ -43,13 +45,26 @@ jobs:
           git add historial.db
           if git diff --cached --quiet; then
             echo "Sin cambios en el registro."
-          else
-            git commit -m "registro: $(date -u +'%Y-%m-%d %H:%M')"
-            git push
+            exit 0
           fi
+          git commit -m "registro: $(date -u +'%Y-%m-%d %H:%M')"
+          ok=0
+          for intento in 1 2 3; do
+            git fetch origin main
+            if git rebase origin/main && git push origin main; then
+              ok=1
+              break
+            fi
+            git rebase --abort 2>/dev/null || true
+            sleep $((intento * 5))
+          done
+          if [ "$ok" = "1" ]; then
+            echo "Registro guardado en el repo."
+          else
+            echo "::warning::No se pudo guardar el registro ahora; se reintenta en la proxima pasada."
+          fi
+          exit 0
 
-  # Panel web en GitHub Pages. Solo se activa si creas la variable PAGES=1
-  # (Settings → Secrets and variables → Actions → pestaña Variables) y el repo es público.
   dashboard:
     if: vars.PAGES == '1' && (github.event.schedule == '20 6 * * *' || github.event_name == 'workflow_dispatch')
     needs: vigilar
@@ -63,23 +78,17 @@ jobs:
       name: github-pages
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
           cache: pip
-
       - name: Instalar dependencias
         run: pip install -r requirements.txt
-
       - name: Generar panel
         run: python dashboard.py
-
       - uses: actions/configure-pages@v5
-
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site
-
       - name: Publicar en Pages
         uses: actions/deploy-pages@v4
